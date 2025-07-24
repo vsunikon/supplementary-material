@@ -1,0 +1,98 @@
+# Pyton code to compute mds positions and issue clusters with gray 
+# Venn-Style layers
+# See Figure 2 in Schneider (2025) Germany's Energy and Climate Policy as an 
+# Ecology of Games. in: Politics and Governance 13.
+
+import os
+os.chdir(r"C:\Users\volke\Nextcloud\$ Python\R-Python\ComponDE")
+
+# === Load Libraries ===
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import seaborn as sns
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist, squareform
+from scipy.spatial import ConvexHull
+from sklearn.metrics import pairwise_distances
+from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.manifold import MDS
+
+# === Load Data ===
+issue_df = pd.read_csv("issue.csv", index_col=0)
+issue_names_df = pd.read_csv("issuenames.csv")
+
+# === Transpose Matrix: Rows = Issues ===
+issue_df_T = issue_df.T
+
+# === Compute Distance and MDS ===
+dist_matrix = pdist(issue_df_T, metric="euclidean")
+square_dist = squareform(dist_matrix)
+
+mds = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+mds_coords = mds.fit_transform(square_dist)
+mds_df = pd.DataFrame(mds_coords, columns=['Dim1', 'Dim2'])
+
+# === Clustering (Ward) ===
+Z = linkage(dist_matrix, method='ward')
+
+# === Label Issues ===
+issue_names_mapping = issue_names_df[[issue_names_df.columns[0], issue_names_df.columns[3]]].copy()
+issue_names_mapping.columns = ['Code', 'Description']
+issue_df_T.index = issue_df_T.index.astype(str).str.strip()
+issue_names_mapping['Code'] = issue_names_mapping['Code'].astype(str).str.strip()
+code_to_name = dict(zip(issue_names_mapping['Code'], issue_names_mapping['Description']))
+unmatched = [code for code in issue_df_T.index if code not in code_to_name]
+if unmatched:
+    print("Unmatched issue codes:", unmatched)
+
+mds_df['Code'] = issue_df_T.index
+mds_df['Issue'] = mds_df['Code'].map(code_to_name).fillna("[missing]")
+
+# === Utility: Expand Polygon for Hull Padding ===
+def expand_polygon(points, scale=1.05):
+    """Expand convex hull outward from its centroid by a scale factor."""
+    center = points.mean(axis=0)
+    return center + scale * (points - center)
+
+# === Plotting with Expanded Hulls ===
+fig, ax = plt.subplots(figsize=(12, 6))
+levels = [2, 3, 4, 5]
+alphas = [0.15, 0.25, 0.35, 0.45]
+
+for k, alpha in zip(levels, alphas):
+    clusters_k = fcluster(Z, t=k, criterion='maxclust')
+    mds_df['Cluster'] = clusters_k
+    for cluster in np.unique(clusters_k):
+        pts = mds_df[mds_df['Cluster'] == cluster][['Dim1', 'Dim2']].values
+        if len(pts) >= 3:
+            hull = ConvexHull(pts)
+            hull_pts = pts[hull.vertices]
+            padded_hull = expand_polygon(hull_pts, scale=1.05)  # ~5% outward
+            poly = patches.Polygon(padded_hull, alpha=alpha, color='lightgray', zorder=0)
+            ax.add_patch(poly)
+
+# Plot MDS points (issues)
+sns.scatterplot(
+    data=mds_df, x='Dim1', y='Dim2',
+    color='black', s=80, marker='o', edgecolor='white', linewidth=0.5, ax=ax
+)
+
+# Add text labels
+for _, row in mds_df.iterrows():
+    label = row.get('Issue', '[n/a]')
+    ax.text(row['Dim1'] + 0.20, row['Dim2'] + 0.20, label, fontsize=12)
+
+# Finalize plot
+plt.title("Nested Clustering of Issues in MDS Space (Gray Venn-Style Layers)")
+plt.xlabel("Dimension 1")
+plt.ylabel("Dimension 2")
+ax.grid(False)
+plt.show()
+
+# Save to file
+fig.savefig("mds_nested_clusters.svg", format="svg")
+
+# Note: Coding was supported by ChatCHPT and RStudio
+
